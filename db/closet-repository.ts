@@ -21,13 +21,19 @@ export async function saveClosetItem(userId:string,raw:any,id?:string,requestId?
  if(existing){await d.prepare('UPDATE owned SET catalogData=?,image=?,size=?,price=?,purchased=?,condition=?,measurements=?,notes=? WHERE id=? AND userId=?').bind(JSON.stringify(metadata),metadata.photos[0],metadata.size,metadata.purchasePrice??0,metadata.purchaseDate,metadata.condition,metadata.measurements,metadata.notes,resultId,userId).run()}
  else{
  // Personal instance metadata is authoritative. Provisional links preserve older outfit compatibility only.
- const collision=await d.prepare('SELECT userId FROM owned WHERE id=?').bind(resultId).first<any>();if(collision&&collision.userId!==userId)throw new AccountError('This garment could not be found.',404);
+ const collision=await d.prepare('SELECT userId,catalogData FROM owned WHERE id=?').bind(resultId).first<any>();if(collision&&collision.userId!==userId)throw new AccountError('This garment could not be found.',404);
+ const assertSameCreate=(saved:any)=>{if(JSON.stringify(validateMetadata(JSON.parse(saved.catalogData)))!==JSON.stringify(metadata))throw new AccountError('This garment was already saved with different details. Reopen it from your closet to edit it.',409)};
+ if(collision){assertSameCreate(collision);return {id:resultId,...await readCloset(userId)}}
  const gid='personal-'+resultId,vid=gid+'-variant';
  const slot=({Tops:'Upper body',Bottoms:'Lower body',Shoes:'Feet','Jackets / Outerwear':'Outer layer',Knitwear:'Outer layer',Accessories:'Accessories'} as Record<string,string>)[metadata.category]||'Upper body';
  await d.batch([
  d.prepare('INSERT OR IGNORE INTO garments (id,brandId,name,category,description,image,slot,material,construction,source,scope) VALUES (?,NULL,?,?,?,?,?,?,?,?,?)').bind(gid,metadata.name||'Unidentified garment',metadata.category,'Personal, unverified garment record.',metadata.photos[0],slot,'Unknown','Unknown','','personal'),
  d.prepare('INSERT OR IGNORE INTO variants (id,garmentId,name,color,era) VALUES (?,?,?,?,?)').bind(vid,gid,'Unidentified','Unknown','Unknown'),
  d.prepare('INSERT OR IGNORE INTO owned (id,userId,variantId,size,sizeSystem,price,purchased,condition,measurements,notes,image,visibility,catalogData,created) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').bind(resultId,userId,vid,metadata.size,'Unspecified',metadata.purchasePrice??0,metadata.purchaseDate,metadata.condition,metadata.measurements,metadata.notes,metadata.photos[0],'Private',JSON.stringify(metadata),now)]);
+ // Another request may have committed this identifier after the initial lookup.
+ const committed=await d.prepare('SELECT userId,catalogData FROM owned WHERE id=?').bind(resultId).first<any>();
+ if(!committed||committed.userId!==userId)throw new AccountError('This garment could not be found.',404);
+ assertSameCreate(committed);
  }
  return {id:resultId,...await readCloset(userId)};
 }
@@ -39,3 +45,4 @@ export async function logIndividualWear(userId:string,raw:any){
  if(raw.notes!==undefined&&typeof raw.notes!=='string')throw Error('Wear note must be text.');
  await d.prepare('INSERT OR IGNORE INTO wears (id,ownedId,outfitId,date,occasion,notes) VALUES (?,?,NULL,?,?,?)').bind(id,raw.ownedId,raw.date,'Individual wear',(raw.notes||'').trim().slice(0,2000)).run();return readCloset(userId);
 }
+
